@@ -185,9 +185,107 @@ h1, h2, h3, h4 { color: #f1f5f9 !important; }
     margin: 10px 0;
 }
 
+/* ---- MANUAL INPUT SPECIFIC STYLES ---- */
+.prediction-result-card {
+    background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(56,189,248,0.10)) !important;
+    border: 1px solid #6366f1 !important;
+    border-radius: 18px !important;
+    padding: 32px !important;
+    text-align: center !important;
+    margin: 20px 0 !important;
+}
+.prediction-result-card h1 {
+    font-family: 'Syne', sans-serif !important;
+    font-size: 3.5rem !important;
+    font-weight: 900 !important;
+    background: linear-gradient(135deg, #6366f1, #38bdf8) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    margin: 8px 0 !important;
+}
+.prediction-result-card p {
+    color: #64748b !important;
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    margin: 0 !important;
+}
+.input-group-label {
+    color: #6366f1 !important;
+    font-size: 0.7rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.12em !important;
+    margin-bottom: 10px !important;
+    padding-bottom: 6px !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+.feature-badge {
+    display: inline-block;
+    background: rgba(99,102,241,0.12);
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: #818cf8;
+    margin: 2px;
+    font-family: monospace;
+}
+.gauge-container {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 14px;
+    padding: 20px;
+    margin-top: 16px;
+}
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: #374151; border-radius: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ===== FIX ONLY WHITE BACKGROUND AREAS ===== */
+
+/* Detect Streamlit blocks that turn white */
+div[data-testid="stMarkdownContainer"],
+div[data-testid="stVerticalBlock"],
+div[data-testid="element-container"] {
+
+    /* Apply ONLY if background becomes light */
+    background-color: transparent !important;
+}
+
+/* Fix text ONLY when background is white/light */
+div[data-testid="stMarkdownContainer"][style*="background"],
+div[data-testid="element-container"][style*="background"] {
+    color: #000000 !important;
+}
+
+/* Fix raw HTML rendering blocks (your KPI issue) */
+.stMarkdown > div {
+    background: transparent !important;
+}
+
+/* Fix specifically white inline styles */
+div[style*="background-color: white"],
+div[style*="background: white"],
+div[style*="background:#fff"],
+div[style*="background:#ffffff"] {
+    background: #ffffff !important;
+    color: #000000 !important;
+}
+
+/* Ensure text inside ONLY those white blocks is black */
+div[style*="background-color: white"] *,
+div[style*="background: white"] *,
+div[style*="background:#fff"] *,
+div[style*="background:#ffffff"] * {
+    color: #000000 !important;
+}
+
+
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -244,8 +342,10 @@ def load_model_and_scaler():
 model, scaler, model_err, scaler_err = load_model_and_scaler()
 
 # ================= SESSION STATE =================
-if "bulk_df"     not in st.session_state: st.session_state.bulk_df     = None
-if "uploaded_df" not in st.session_state: st.session_state.uploaded_df = None
+if "bulk_df"          not in st.session_state: st.session_state.bulk_df          = None
+if "uploaded_df"      not in st.session_state: st.session_state.uploaded_df      = None
+if "manual_pred"      not in st.session_state: st.session_state.manual_pred      = None
+if "manual_pred_hist" not in st.session_state: st.session_state.manual_pred_hist = []
 
 # =====================================================================
 # OUTPUT / ID COLS
@@ -254,32 +354,19 @@ OUTPUT_COLS = {'Sales', 'sales', 'SALES', 'Predicted Sales', 'target', 'Target',
 ID_COLS     = {'ID', 'id', 'Id'}
 
 # =====================================================================
-# PREPROCESSING — mirrors notebook pipeline EXACTLY
-#
-# From the notebook screenshots:
-#   [23] drop ID
-#   [24] Month = Date.dt.month
-#   [25] MonthlySales = groupby(['Store_id','Month'])['Sales'].sum() merged back  ← 16th feature
-#   [27] get_dummies(['Store_Type','Location_Type','Region_Code'], drop_first=True)
-#
-# For prediction data (no Sales column):
-#   MonthlySales is computed as groupby(['Store_id','Month'])['#Order'].sum()
-#   as a proportional proxy, then aligned to model.feature_names_in_.
+# PREPROCESSING
 # =====================================================================
-
 def preprocess_for_prediction(raw_df):
     df         = raw_df.copy()
     df.columns = df.columns.str.strip()
     dropped    = []
     warn_msgs  = []
 
-    # 1. Drop output / ID columns
     to_drop = [c for c in df.columns if c in OUTPUT_COLS or c in ID_COLS]
     if to_drop:
         dropped = to_drop
         df = df.drop(columns=to_drop)
 
-    # 2. Parse Date → Month (keep Date for MonthlySales step)
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df['Month'] = df['Date'].dt.month.fillna(1).astype(int)
@@ -287,7 +374,6 @@ def preprocess_for_prediction(raw_df):
         df['Month'] = 1
         warn_msgs.append("'Date' column not found — Month defaulted to 1.")
 
-    # 3. Numeric coercions
     for col in ['Store_id', 'Holiday', '#Order']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -295,7 +381,6 @@ def preprocess_for_prediction(raw_df):
             df[col] = 0
             warn_msgs.append(f"'{col}' column not found — defaulted to 0.")
 
-    # 4. Encode Discount → 1/0
     if 'Discount' in df.columns:
         df['Discount'] = df['Discount'].map({
             'Yes': 1, 'No': 0, 'yes': 1, 'no': 0, 1: 1, 0: 0
@@ -304,11 +389,7 @@ def preprocess_for_prediction(raw_df):
         df['Discount'] = 0
         warn_msgs.append("'Discount' column not found — defaulted to 0.")
 
-    # 5. MonthlySales — THE MISSING 16th FEATURE
-    #    Training: groupby(['Store_id','Month'])['Sales'].sum() merged back
-    #    Prediction: use #Order sum per store/month as proxy (same aggregation logic)
     if 'MonthlySales' in df.columns:
-        # Already present — use directly
         df['MonthlySales'] = pd.to_numeric(df['MonthlySales'], errors='coerce').fillna(0)
     else:
         monthly_agg = (df.groupby(['Store_id', 'Month'])['#Order']
@@ -318,13 +399,9 @@ def preprocess_for_prediction(raw_df):
         df = df.merge(monthly_agg, on=['Store_id', 'Month'], how='left')
         df['MonthlySales'] = df['MonthlySales'].fillna(0)
 
-    # Drop Date — done with it
     if 'Date' in df.columns:
         df = df.drop(columns=['Date'])
 
-    # 6. One-hot encode — FULLY DYNAMIC
-    #    Build dummies from actual data, then reindex to model's expected columns.
-    #    drop_first=False here; alignment step handles dropping S1/L1/R1 implicitly.
     for col in ['Store_Type', 'Location_Type', 'Region_Code']:
         if col in df.columns:
             dummies = pd.get_dummies(df[col], prefix=col, drop_first=False)
@@ -332,7 +409,6 @@ def preprocess_for_prediction(raw_df):
         else:
             warn_msgs.append(f"'{col}' column not found — dummies set to 0.")
 
-    # 7. Align EXACTLY to the model's feature list (the ground truth)
     if model is not None and hasattr(model, 'feature_names_in_'):
         required_cols = list(model.feature_names_in_)
     else:
@@ -358,6 +434,25 @@ def check_column_compatibility(raw_df):
                     'Date', 'Holiday', 'Discount'}
     missing = min_required - available
     return len(missing) == 0, missing
+
+
+# ================= MANUAL PREDICTION HELPER =================
+def preprocess_manual_input(store_id, store_type, location_type, region_code,
+                             date_val, holiday, discount, n_orders):
+    """Build a single-row DataFrame from manual inputs and preprocess it."""
+    row = {
+        'Store_id':      store_id,
+        'Store_Type':    store_type,
+        'Location_Type': location_type,
+        'Region_Code':   region_code,
+        'Date':          str(date_val),
+        'Holiday':       int(holiday),
+        'Discount':      'Yes' if discount else 'No',
+        '#Order':        n_orders,
+    }
+    df_manual = pd.DataFrame([row])
+    X, dropped, warns = preprocess_for_prediction(df_manual)
+    return X, warns
 
 
 # ================= SAMPLE DATA =================
@@ -411,7 +506,7 @@ else:
 st.markdown("---")
 
 # ================= TABS =================
-t1, t2, t3 = st.tabs(["📂 Data & Prediction", "📊 Analytics Dashboard", "ℹ️ How It Works"])
+t1, t2, t3, t4 = st.tabs(["📂 Data & Prediction", "🖊️ Manual Prediction", "📊 Analytics Dashboard", "ℹ️ How It Works"])
 
 # ======================================================
 # TAB 1 — DATA & PREDICTION
@@ -493,7 +588,6 @@ with t1:
                 st.error(f"❌ Error: {e}")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Preview + Predict ─────────────────────────────────────────────
     if st.session_state.uploaded_df is not None:
         st.markdown("---")
         st.subheader("Step 2 — Preview & Predict")
@@ -543,7 +637,6 @@ with t1:
                                     f"`{'`, `'.join(model.feature_names_in_)}`")
 
                         X_input = scaler.transform(X_proc) if scaler is not None else X_proc.values
-
                         preds = model.predict(X_input)
 
                         result_df = raw_df.copy()
@@ -575,9 +668,228 @@ with t1:
                         st.code(str(e))
 
 # ======================================================
-# TAB 2 — ANALYTICS DASHBOARD
+# TAB 2 — MANUAL PREDICTION  (NEW)
 # ======================================================
 with t2:
+    st.subheader("🖊️ Manual Sales Prediction")
+    st.markdown(
+        '<p style="color:#94a3b8;font-size:14px;margin-bottom:24px;">'
+        'Fill in the store details below and click <b style="color:#6366f1;">Predict Sales</b> '
+        'to get an instant AI-powered estimate.</p>',
+        unsafe_allow_html=True
+    )
+
+    if model is None:
+        st.error("❌ `sales_model.pkl` not loaded. Place it in the same folder as `app.py` and restart.")
+    else:
+        # ── Input Form ────────────────────────────────────────────────
+        left_col, right_col = st.columns([1, 1], gap="large")
+
+        with left_col:
+            st.markdown('<div class="section-card">', unsafe_allow_html=True)
+
+            # --- Store Identity ---
+            st.markdown('<p class="input-group-label">🏪 Store Identity</p>', unsafe_allow_html=True)
+            man_store_id = st.number_input(
+                "Store ID", min_value=1, max_value=9999, value=1, step=1,
+                help="Unique numeric identifier for the store (e.g. 1–300)",
+                key="man_store_id"
+            )
+            man_store_type = st.selectbox(
+                "Store Type", ["S1", "S2", "S3", "S4"],
+                help="S1 = Small, S2 = Medium, S3 = Large, S4 = Superstore",
+                key="man_store_type"
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- Location ---
+            st.markdown('<p class="input-group-label">📍 Location</p>', unsafe_allow_html=True)
+            man_location = st.selectbox(
+                "Location Type", ["L1", "L2", "L3", "L4", "L5"],
+                help="Geographic zone of the store",
+                key="man_location"
+            )
+            man_region = st.selectbox(
+                "Region Code", ["R1", "R2", "R3", "R4"],
+                help="Sales region the store belongs to",
+                key="man_region"
+            )
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with right_col:
+            st.markdown('<div class="section-card">', unsafe_allow_html=True)
+
+            # --- Date & Context ---
+            st.markdown('<p class="input-group-label">📅 Date & Context</p>', unsafe_allow_html=True)
+            man_date = st.date_input(
+                "Date", value=pd.Timestamp("2019-06-15"),
+                help="Transaction / reporting date. Month is extracted automatically.",
+                key="man_date"
+            )
+            man_holiday = st.toggle(
+                "Is this a Holiday?", value=False,
+                help="Turn ON if the date falls on a public holiday",
+                key="man_holiday"
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- Sales Drivers ---
+            st.markdown('<p class="input-group-label">🛒 Sales Drivers</p>', unsafe_allow_html=True)
+            man_discount = st.toggle(
+                "Discount Active?", value=False,
+                help="Turn ON if the store is running a discount/promotion",
+                key="man_discount"
+            )
+            man_orders = st.number_input(
+                "Number of Orders (#Order)", min_value=0, max_value=99999,
+                value=45, step=1,
+                help="Total number of orders placed at this store on this date",
+                key="man_orders"
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- Feature summary ---
+            month_name = pd.Timestamp(str(man_date)).strftime("%B")
+            st.markdown(f"""
+            <div style="background:#0b0f19;border:1px solid #1f2937;border-radius:10px;padding:12px 14px;">
+                <p style="color:#475569;font-size:11px;font-weight:700;text-transform:uppercase;
+                          letter-spacing:0.1em;margin:0 0 8px 0;">Auto-computed features</p>
+                <span class="feature-badge">Month = {pd.Timestamp(str(man_date)).month} ({month_name})</span>
+                <span class="feature-badge">MonthlySales = ƒ(#Order × month)</span>
+                <span class="feature-badge">OHE → {man_store_type} / {man_location} / {man_region}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Predict Button ────────────────────────────────────────────
+        btn_col, _ = st.columns([1, 2])
+        with btn_col:
+            predict_clicked = st.button("🚀 Predict Sales", use_container_width=True, key="manual_predict_btn")
+
+        if predict_clicked:
+            with st.spinner("Running prediction..."):
+                try:
+                    X_man, man_warns = preprocess_manual_input(
+                        store_id      = man_store_id,
+                        store_type    = man_store_type,
+                        location_type = man_location,
+                        region_code   = man_region,
+                        date_val      = man_date,
+                        holiday       = 1 if man_holiday else 0,
+                        discount      = man_discount,
+                        n_orders      = man_orders,
+                    )
+
+                    for w in man_warns:
+                        st.warning(f"⚠️ {w}")
+
+                    X_input_man = scaler.transform(X_man) if scaler is not None else X_man.values
+                    pred_value  = float(model.predict(X_input_man)[0])
+                    pred_value  = max(0, pred_value)   # clamp negatives
+
+                    st.session_state.manual_pred = pred_value
+
+                    # Save to history
+                    st.session_state.manual_pred_hist.append({
+                        "Store ID":      man_store_id,
+                        "Store Type":    man_store_type,
+                        "Location":      man_location,
+                        "Region":        man_region,
+                        "Date":          str(man_date),
+                        "Holiday":       "Yes" if man_holiday else "No",
+                        "Discount":      "Yes" if man_discount else "No",
+                        "#Order":        man_orders,
+                        "Predicted Sales": round(pred_value, 2),
+                    })
+
+                except Exception as e:
+                    st.error(f"❌ Prediction failed: {e}")
+                    st.code(str(e))
+
+        # ── Result Display ────────────────────────────────────────────
+        if st.session_state.manual_pred is not None:
+            pred_val = st.session_state.manual_pred
+
+            st.markdown(f"""
+            <div class="prediction-result-card">
+                <p>🎯 Predicted Sales</p>
+                <h1>₹{pred_val:,.0f}</h1>
+                <p style="color:#475569;margin-top:8px;font-size:12px;">
+                    Store {man_store_id} &nbsp;·&nbsp; {man_store_type} &nbsp;·&nbsp;
+                    {man_location} &nbsp;·&nbsp; {man_region} &nbsp;·&nbsp;
+                    {pd.Timestamp(str(man_date)).strftime("%d %b %Y")}
+                    {"&nbsp;·&nbsp; 🎉 Holiday" if man_holiday else ""}
+                    {"&nbsp;·&nbsp; 🏷️ Discount Active" if man_discount else ""}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Context KPIs
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(f'<div class="kpi-card"><h4>Month</h4><h2>{pd.Timestamp(str(man_date)).strftime("%b")}</h2></div>', unsafe_allow_html=True)
+            k2.markdown(f'<div class="kpi-card"><h4>Orders</h4><h2>{man_orders:,}</h2></div>', unsafe_allow_html=True)
+            if man_orders > 0:
+                k3.markdown(
+                    f'<div class="kpi-card"><h4>Per Order</h4><h2>₹{pred_val/man_orders:,.0f}</h2></div>',
+                    unsafe_allow_html=True
+                )
+        # ── Prediction History ────────────────────────────────────────
+        if st.session_state.manual_pred_hist:
+            st.markdown("---")
+            st.markdown("#### 🕓 Prediction History (this session)")
+
+            hist_df = pd.DataFrame(st.session_state.manual_pred_hist)
+
+            # Highlight max row
+            st.dataframe(
+                hist_df.style.highlight_max(subset=["Predicted Sales"], color="#dbeafe"),
+                use_container_width=True
+            )
+
+            # Mini chart if more than 1 prediction
+            if len(hist_df) > 1:
+                fig_hist = px.bar(
+                    hist_df.reset_index(),
+                    x=hist_df.index + 1,
+                    y="Predicted Sales",
+                    title="Predicted Sales Across Manual Runs",
+                    color="Predicted Sales",
+                    color_continuous_scale=["#1e2433", "#6366f1", "#38bdf8"],
+                    labels={"x": "Run #"},
+                    text="Predicted Sales",
+                )
+                fig_hist.update_traces(
+                    texttemplate='₹%{text:,.0f}', textposition='outside',
+                    textfont=dict(size=12, color="#e2e8f0")
+                )
+                fig_hist.update_layout(showlegend=False, coloraxis_showscale=False)
+                st.plotly_chart(style_fig(fig_hist, 340), use_container_width=True, key=chart_key())
+
+            col_dl, col_clr = st.columns([3, 1])
+            with col_dl:
+                st.download_button(
+                    "⬇️ Download History CSV",
+                    hist_df.to_csv(index=False).encode(),
+                    "manual_predictions.csv", "text/csv",
+                    use_container_width=True
+                )
+            with col_clr:
+                if st.button("🗑️ Clear History", use_container_width=True, key="clear_hist"):
+                    st.session_state.manual_pred_hist = []
+                    st.session_state.manual_pred      = None
+                    st.rerun()
+
+# ======================================================
+# TAB 3 — ANALYTICS DASHBOARD
+# ======================================================
+with t3:
     st.subheader("📊 Sales Analytics Dashboard")
 
     if st.session_state.bulk_df is None:
@@ -591,7 +903,7 @@ with t2:
         k2.markdown(f'<div class="kpi-card"><h4>Avg Predicted Sales</h4><h2>₹{df[pred_col].mean():,.0f}</h2></div>', unsafe_allow_html=True)
         k3.markdown(f'<div class="kpi-card"><h4>Max Predicted Sales</h4><h2>₹{df[pred_col].max():,.0f}</h2></div>', unsafe_allow_html=True)
         k4.markdown(f'<div class="kpi-card"><h4>Total Predicted Revenue</h4><h2>₹{df[pred_col].sum()/1e6:.1f}M</h2></div>', unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.divider()
 
         st.markdown('<div class="insight-box"><b>Insight:</b> Overall spread of predicted sales values.</div>', unsafe_allow_html=True)
         fig1 = px.histogram(df, x=pred_col, nbins=40, title="Predicted Sales Distribution",
@@ -788,9 +1100,9 @@ with t2:
         )
 
 # ======================================================
-# TAB 3 — HOW IT WORKS
+# TAB 4 — HOW IT WORKS
 # ======================================================
-with t3:
+with t4:
     st.subheader("ℹ️ How to Use SalesIQ Pro")
 
     st.markdown("""
@@ -799,6 +1111,7 @@ with t3:
     <ol style="color:#94a3b8;line-height:2.4;font-size:14px;padding-left:18px;">
         <li><b style="color:#38bdf8;">Model auto-loads</b> — <code>sales_model.pkl</code> &amp; <code>scaler.pkl</code> from the same folder as <code>app.py</code>.</li>
         <li><b style="color:#38bdf8;">Load dataset</b> — Upload CSV/Excel/JSON/DB or paste a Google Drive link.</li>
+        <li><b style="color:#38bdf8;">Manual Prediction</b> — Use the <b>Manual Prediction</b> tab to enter a single store's details and get an instant prediction with a session history tracker.</li>
         <li><b style="color:#38bdf8;">Auto feature engineering</b> — <code>Month</code> is extracted from Date; <code>MonthlySales</code> is computed per store/month from <code>#Order</code> — exactly mirroring the training notebook.</li>
         <li><b style="color:#38bdf8;">Dynamic OHE alignment</b> — Dummies are built from actual data categories, then the full feature matrix is aligned to the model's exact <code>feature_names_in_</code>. Missing categories are filled with 0.</li>
         <li><b style="color:#38bdf8;">Run Predictions</b> — Click <b>Run Sales Prediction</b>.</li>
